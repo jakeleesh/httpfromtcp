@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"net"
+
+	"github.com/jakeleesh/httpfromtcp/internal/request"
 )
 
 // ReadCloser an interface with Read and Close
@@ -64,10 +66,20 @@ func main() {
 			log.Fatal("error", "error", err)
 		}
 
-		// Can read 8 bytes from a connection/file
-		// Same principal, working with ordered data
-		for line := range getLinesChannel(conn) {
-			fmt.Printf("read: %s\n", line)
+		// // Can read 8 bytes from a connection/file
+		// // Same principal, working with ordered data
+		// for line := range getLinesChannel(conn) {
+		// 	fmt.Printf("read: %s\n", line)
+		// }
+
+		r, err := request.RequestFromReader(conn)
+		if err != nil {
+			log.Fatal("error", "error", err)
 		}
+
+		fmt.Printf("Request line:\n")
+		fmt.Printf("- Method: %s\n", r.RequestLine.Method)
+		fmt.Printf("- Target: %s\n", r.RequestLine.RequestTarget)
+		fmt.Printf("- Version: %s\n", r.RequestLine.HttpVersion)
 	}
 }
