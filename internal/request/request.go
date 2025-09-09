@@ -1,14 +1,28 @@
 package request
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 	"io"
-	"strings"
+)
+
+type parserState string
+
+const (
+	StateInit  parserState = "initialized"
+	StateDone  parserState = "done"
+	StateError parserState = "error"
 )
 
 type Request struct {
 	RequestLine RequestLine
+	State       parserState
+}
+
+func newRequest() *Request {
+	return &Request{
+		State: StateInit,
+	}
 }
 
 type RequestLine struct {
@@ -19,58 +33,115 @@ type RequestLine struct {
 
 var ERROR_MALFORMED_REQUEST_LINE = fmt.Errorf("malformed request-line")
 var ERROR_UNSUPPORTED_HTTP_VERSION = fmt.Errorf("unsupported http version")
-var SEPERATOR = "\r\n"
+var ERROR_REQUEST_IN_ERROR_STATE = fmt.Errorf("request in error state")
+var SEPERATOR = []byte("\r\n")
 
 // Return RequestLine, rest of the string it doesn't know about
-func parseRequestLine(b string) (*RequestLine, string, error) {
-	idx := strings.Index(b, SEPERATOR)
+func parseRequestLine(b []byte) (*RequestLine, int, error) {
+	idx := bytes.Index(b, SEPERATOR)
 	// Haven't found first found new line yet
+	// No SEPERATOR
 	if idx == -1 {
 		// Return nil, there's no error
-		return nil, b, nil
+		// Read 0 bytes
+		return nil, 0, nil
 	}
 
 	startLine := b[:idx]
 	// Skipping seperator, don't include
-	restOfMsg := b[idx+len(SEPERATOR):]
+	read := idx + len(SEPERATOR)
 
-	parts := strings.Split(startLine, " ")
+	parts := bytes.Split(startLine, []byte(" "))
 	// If length does not equal 3
 	// Meanining don't have method, path, HTTP Protocol
 	if len(parts) != 3 {
-		return nil, restOfMsg, ERROR_MALFORMED_REQUEST_LINE
+		return nil, 0, ERROR_MALFORMED_REQUEST_LINE
 	}
 
-	httpParts := strings.Split(parts[2], "/")
-	if len(httpParts) != 2 || httpParts[0] != "HTTP" || httpParts[1] != "1.1" {
-		return nil, restOfMsg, ERROR_MALFORMED_REQUEST_LINE
+	httpParts := bytes.Split(parts[2], []byte("/"))
+	if len(httpParts) != 2 || string(httpParts[0]) != "HTTP" || string(httpParts[1]) != "1.1" {
+		return nil, 0, ERROR_MALFORMED_REQUEST_LINE
 	}
 
 	rl := &RequestLine{
-		Method:        parts[0],
-		RequestTarget: parts[1],
-		HttpVersion:   httpParts[1],
+		Method:        string(parts[0]),
+		RequestTarget: string(parts[1]),
+		HttpVersion:   string(httpParts[1]),
 	}
 
-	return rl, restOfMsg, nil
+	return rl, read, nil
+}
+
+func (r *Request) parse(data []byte) (int, error) {
+	read := 0
+
+	// State machine that keeps on running
+	// Could get large piece of data that contains several state transitions
+outer:
+	for {
+		switch r.State {
+		case StateError:
+			return 0, ERROR_REQUEST_IN_ERROR_STATE
+
+		case StateInit:
+			// Pass in data starting at read
+			rl, n, err := parseRequestLine(data[read:])
+			if err != nil {
+				// Error, didn't read anything
+				r.State = StateError
+				return 0, err
+			}
+
+			// Haven't read anything
+			// Unable to move forward, keep on parsing
+			if n == 0 {
+				break outer
+			}
+
+			r.RequestLine = *rl
+			read += n
+
+			// Go to next state
+			r.State = StateDone
+
+		case StateDone:
+			break outer
+		}
+	}
+	return read, nil
+}
+
+func (r *Request) done() bool {
+	return r.State == StateDone || r.State == StateError
 }
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("unable to io.ReadAll"),
-			err,
-		)
+	request := newRequest()
+
+	// Make buffer for reading
+	// NOTE: buffer could get overrun
+	buf := make([]byte, 1024)
+	bufLen := 0
+	// Instead of reading everything at once
+	// Keep on reading while the request is not done
+	for !request.done() {
+		// Read out the buffer
+		n, err := reader.Read(buf[bufLen:])
+		if err != nil {
+			return nil, err
+		}
+
+		bufLen += n
+		readN, err := request.parse(buf[:bufLen])
+		if err != nil {
+			return nil, err
+		}
+
+		// Read from offset of readN up until the length
+		// Move all that to beginning
+		copy(buf, buf[readN:bufLen])
+		bufLen -= readN
 	}
 
-	str := string(data)
-	rl, _, err := parseRequestLine(str)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Request{
-		RequestLine: *rl,
-	}, err
+	return request, nil
 }
