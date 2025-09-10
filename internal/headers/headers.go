@@ -64,7 +64,15 @@ func (h *Headers) Get(name string) string {
 }
 
 func (h *Headers) Set(name, value string) {
-	h.headers[strings.ToLower(name)] = value
+	name = strings.ToLower(name)
+
+	// Found
+	if v, ok := h.headers[name]; ok {
+		// Take previous and add i  new value
+		h.headers[name] = fmt.Sprintf("%s,%s", v, value)
+	} else {
+		h.headers[name] = value
+	}
 }
 
 // Parsing field lines
