@@ -75,6 +75,12 @@ func (h *Headers) Set(name, value string) {
 	}
 }
 
+func (h *Headers) ForEach(cb func(n, v string)) {
+	for n, v := range h.headers {
+		cb(n, v)
+	}
+}
+
 // Parsing field lines
 // Field lines look like - field-name ":" OWS field-value OWS
 // Have a field-name, a colon, optional space, field-value, optional white space, and then \r\n
