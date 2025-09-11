@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/jakeleesh/httpfromtcp/internal/headers"
 )
@@ -12,15 +13,31 @@ type parserState string
 
 const (
 	StateInit    parserState = "initialized"
+	StateHeaders parserState = "headers"
+	StateBody    parserState = "body"
 	StateDone    parserState = "done"
 	StateError   parserState = "error"
-	StateHeaders parserState = "headers"
 )
 
 type Request struct {
 	RequestLine RequestLine
 	Headers     *headers.Headers
 	State       parserState
+	Body        string
+}
+
+// Get int off the headers
+func getInt(headers *headers.Headers, name string, defaultValue int) int {
+	valueStr, exists := headers.Get(name)
+	if !exists {
+		return defaultValue
+	}
+
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
+		return defaultValue
+	}
+	return value
 }
 
 func newRequest() *Request {
@@ -77,6 +94,11 @@ func parseRequestLine(b []byte) (*RequestLine, int, error) {
 	return rl, read, nil
 }
 
+func (r *Request) hasBody() bool {
+	length := getInt(r.Headers, "content-length", 0)
+	return length >= 0
+}
+
 func (r *Request) parse(data []byte) (int, error) {
 	read := 0
 
@@ -85,6 +107,9 @@ func (r *Request) parse(data []byte) (int, error) {
 outer:
 	for {
 		currentData := data[read:]
+		if len(currentData) == 0 {
+			break outer
+		}
 
 		switch r.State {
 		case StateError:
@@ -114,6 +139,7 @@ outer:
 		case StateHeaders:
 			n, done, err := r.Headers.Parse(currentData)
 			if err != nil {
+				r.State = StateError
 				return 0, err
 			}
 
@@ -127,6 +153,31 @@ outer:
 			read += n
 
 			if done {
+				if r.hasBody() {
+					r.State = StateBody
+				} else {
+					r.State = StateDone
+				}
+			}
+
+		// Parse the body out
+		case StateBody:
+			length := getInt(r.Headers, "content-length", 0)
+			// Nothing to do
+			if length == 0 {
+				panic("chunked not implemented")
+			}
+
+			// Something need to parse out
+			// How much data should we take? That's how much we should get
+			remaining := min(length-len(r.Body), len(currentData))
+			// If already have data in body, aggregate on body
+			// Up to remaining, that's how much we should be grabbing out
+			// Up to the length of the content-length that is remaining
+			r.Body += string(currentData[:remaining])
+			read += remaining
+
+			if len(r.Body) == length {
 				r.State = StateDone
 			}
 
