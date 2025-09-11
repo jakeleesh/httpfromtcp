@@ -4,24 +4,29 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+
+	"github.com/jakeleesh/httpfromtcp/internal/headers"
 )
 
 type parserState string
 
 const (
-	StateInit  parserState = "initialized"
-	StateDone  parserState = "done"
-	StateError parserState = "error"
+	StateInit    parserState = "initialized"
+	StateDone    parserState = "done"
+	StateError   parserState = "error"
+	StateHeaders parserState = "headers"
 )
 
 type Request struct {
 	RequestLine RequestLine
+	Headers     *headers.Headers
 	State       parserState
 }
 
 func newRequest() *Request {
 	return &Request{
-		State: StateInit,
+		State:   StateInit,
+		Headers: headers.NewHeaders(),
 	}
 }
 
@@ -79,13 +84,15 @@ func (r *Request) parse(data []byte) (int, error) {
 	// Could get large piece of data that contains several state transitions
 outer:
 	for {
+		currentData := data[read:]
+
 		switch r.State {
 		case StateError:
 			return 0, ERROR_REQUEST_IN_ERROR_STATE
 
 		case StateInit:
 			// Pass in data starting at read
-			rl, n, err := parseRequestLine(data[read:])
+			rl, n, err := parseRequestLine(currentData)
 			if err != nil {
 				// Error, didn't read anything
 				r.State = StateError
@@ -102,12 +109,35 @@ outer:
 			read += n
 
 			// Go to next state
-			r.State = StateDone
+			r.State = StateHeaders
+
+		case StateHeaders:
+			n, done, err := r.Headers.Parse(currentData)
+			if err != nil {
+				return 0, err
+			}
+
+			// Couldn't read anything
+			if n == 0 {
+				// Needs to return already read data
+				break outer
+			}
+
+			// n is how much we have parsed
+			read += n
+
+			if done {
+				r.State = StateDone
+			}
 
 		case StateDone:
 			break outer
+
+		default:
+			panic("somehow we have programmed poorly")
 		}
 	}
+
 	return read, nil
 }
 
